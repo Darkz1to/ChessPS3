@@ -1,0 +1,71 @@
+name: Build PS3 (PKG + SELF)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get -y install libelf-dev zlib1g-dev libssl-dev python3 make g++
+
+      # Pre-built ps3dev SDK (toolchain + PSL1GHT + ps3libraries), same source the PSL1GHT CI uses
+      - name: Download ps3dev SDK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          URL=$(gh api repos/ps3dev/ps3dev/releases --jq '
+            map(select(.draft | not))
+            | sort_by(.published_at) | reverse
+            | map(.assets[] | select(.name == "ps3dev-linux-X64.tar.gz") | .browser_download_url)
+            | .[0]')
+          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
+            echo "Nao achei ps3dev-linux-X64.tar.gz nas releases de ps3dev/ps3dev"; exit 1
+          fi
+          echo "SDK: $URL"
+          curl -sL "$URL" | tar xz -C ./
+          echo "PS3DEV=${GITHUB_WORKSPACE}/ps3dev"  >> $GITHUB_ENV
+          echo "PSL1GHT=${GITHUB_WORKSPACE}/ps3dev" >> $GITHUB_ENV
+          echo "${GITHUB_WORKSPACE}/ps3dev/bin"     >> $GITHUB_PATH
+          echo "${GITHUB_WORKSPACE}/ps3dev/ppu/bin" >> $GITHUB_PATH
+          echo "${GITHUB_WORKSPACE}/ps3dev/spu/bin" >> $GITHUB_PATH
+
+      - name: Check de logica no host (sem PS3)
+        run: bash tools/host_check.sh
+
+      - name: Build PKG
+        run: make pkg
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: StardewPS3
+          path: |
+            StardewPS3.pkg
+            StardewPS3.self
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: StardewPS3
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            StardewPS3.pkg
+            StardewPS3.self
+            
