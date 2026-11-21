@@ -12,12 +12,36 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Aceita o projeto solto no repo OU um .zip na raiz (ideal para quem sobe pelo celular)
+      - name: Preparar projeto
+        run: |
+          if [ -f Makefile ]; then
+            echo "PROJ=$PWD" >> $GITHUB_ENV
+          else
+            Z=$(ls ./*.zip 2>/dev/null | head -1 || true)
+            if [ -z "$Z" ]; then
+              echo "Projeto nao encontrado. Envie StardewValley-PS3.zip para a RAIZ do repositorio."; ls -la; exit 1
+            fi
+            echo "Descompactando $Z"
+            mkdir -p _proj && unzip -q -o "$Z" -d _proj
+            M=$(find _proj -name Makefile | head -1)
+            [ -n "$M" ] || { echo "Makefile nao esta dentro do zip"; exit 1; }
+            echo "PROJ=$PWD/$(dirname "$M")" >> $GITHUB_ENV
+          fi
+
+      - name: Conferir arquivos do projeto
+        run: |
+          cd "$PROJ"
+          for f in Makefile source/main.cpp shaders/sprite.vcg shaders/sprite.fcg resources/ICON0.PNG; do
+            [ -e "$f" ] || { echo "FALTANDO: $f"; exit 1; }
+          done
+          echo "projeto ok em $PROJ"
+
       - name: Host dependencies
         run: |
           sudo apt-get update
           sudo apt-get -y install libelf-dev zlib1g-dev libssl-dev python3 make g++
 
-      # Pre-built ps3dev SDK (toolchain + PSL1GHT + ps3libraries), same source the PSL1GHT CI uses
       - name: Download ps3dev SDK
         env:
           GH_TOKEN: ${{ github.token }}
@@ -31,50 +55,33 @@ jobs:
             echo "Nao achei ps3dev-linux-X64.tar.gz nas releases de ps3dev/ps3dev"; exit 1
           fi
           echo "SDK: $URL"
-          curl -sL "$URL" | tar xz -C ./
+          curl -sL "$URL" | tar xz -C "$GITHUB_WORKSPACE"
           echo "PS3DEV=${GITHUB_WORKSPACE}/ps3dev"  >> $GITHUB_ENV
           echo "PSL1GHT=${GITHUB_WORKSPACE}/ps3dev" >> $GITHUB_ENV
           echo "${GITHUB_WORKSPACE}/ps3dev/bin"     >> $GITHUB_PATH
           echo "${GITHUB_WORKSPACE}/ps3dev/ppu/bin" >> $GITHUB_PATH
           echo "${GITHUB_WORKSPACE}/ps3dev/spu/bin" >> $GITHUB_PATH
 
-      - name: Conferir arquivos do projeto
-        run: |
-          for f in Makefile source/main.cpp shaders/sprite.vcg shaders/sprite.fcg resources/ICON0.PNG; do
-            [ -e "$f" ] || { echo "FALTANDO no repositorio: $f (envie a pasta inteira)"; exit 1; }
-          done
-          ls -R source shaders resources | head -50
-
       - name: Check de logica no host (opcional)
         continue-on-error: true
         run: |
+          cd "$PROJ"
           if [ -f tools/host_check.sh ]; then bash tools/host_check.sh; else echo "tools/ ausente: pulando"; fi
 
       - name: Build PKG
-        run: make pkg
+        run: |
+          cd "$PROJ"
+          make pkg
+
+      - name: Reunir saidas
+        run: |
+          mkdir -p out
+          cp "$PROJ"/StardewPS3.pkg "$PROJ"/StardewPS3.self out/
+          ls -la out
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: StardewPS3
-          path: |
-            StardewPS3.pkg
-            StardewPS3.self
+          path: out/*
           if-no-files-found: error
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: StardewPS3
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            StardewPS3.pkg
-            StardewPS3.self
-            
