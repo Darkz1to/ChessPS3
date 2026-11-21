@@ -62,6 +62,33 @@ jobs:
           echo "${GITHUB_WORKSPACE}/ps3dev/ppu/bin" >> $GITHUB_PATH
           echo "${GITHUB_WORKSPACE}/ps3dev/spu/bin" >> $GITHUB_PATH
 
+      # cgcomp (compilador de shaders do PSL1GHT) carrega libCg.so da NVIDIA; nao vem no SDK
+      - name: Install NVIDIA Cg toolkit
+        run: |
+          find_cg() { find /usr /opt "$HOME/cg" -name 'libCg.so*' 2>/dev/null | head -1; }
+          L=$(find_cg)
+          if [ -z "$L" ]; then
+            for P in libcg nvidia-cg-toolkit; do
+              sudo apt-get install -y "$P" >/dev/null 2>&1 && echo "apt: $P instalado" || echo "apt: $P indisponivel"
+            done
+            L=$(find_cg)
+          fi
+          if [ -z "$L" ]; then
+            mkdir -p "$HOME/cg"
+            for U in \
+              https://developer.download.nvidia.com/cg/Cg_3.1/Cg-3.1_April2012_x86_64.tgz \
+              http://developer.download.nvidia.com/cg/Cg_3.1/Cg-3.1_April2012_x86_64.tgz; do
+              if curl -fsSL "$U" -o "$HOME/cg.tgz"; then tar xzf "$HOME/cg.tgz" -C "$HOME/cg" && break; fi
+            done
+            L=$(find_cg)
+          fi
+          [ -n "$L" ] || { echo "libCg.so NAO encontrado por nenhum metodo"; exit 1; }
+          D=$(dirname "$L")
+          # garante o nome sem versao que o cgcomp usa em dlopen("libCg.so")
+          [ -e "$D/libCg.so" ] || sudo ln -sf "$L" "$D/libCg.so"
+          echo "Cg em $D"
+          echo "LD_LIBRARY_PATH=$D:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+
       - name: Check de logica no host (opcional)
         continue-on-error: true
         run: |
@@ -85,3 +112,4 @@ jobs:
           name: StardewPS3
           path: out/*
           if-no-files-found: error
+          
