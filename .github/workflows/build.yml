@@ -1,4 +1,8 @@
-name: Build PS3 (PKG + SELF)
+# Builds the PS3 version of HK3DS (PSL1GHT). Produces:
+#   hk3ds_ps3.pkg / .self        standard art
+#   hk3ds_ps3_hd.pkg / .self     HD art (use with the romfs_hd data)
+# The game DATA is not built here (it comes from your own copy of the game, converted on your PC - see PS3_TUTORIAL.md).
+name: Build PS3
 
 on:
   push:
@@ -12,104 +16,34 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Aceita o projeto solto no repo OU um .zip na raiz (ideal para quem sobe pelo celular)
-      - name: Preparar projeto
-        run: |
-          if [ -f Makefile ]; then
-            echo "PROJ=$PWD" >> $GITHUB_ENV
-          else
-            Z=$(ls ./*.zip 2>/dev/null | head -1 || true)
-            if [ -z "$Z" ]; then
-              echo "Projeto nao encontrado. Envie StardewValley-PS3.zip para a RAIZ do repositorio."; ls -la; exit 1
-            fi
-            echo "Descompactando $Z"
-            mkdir -p _proj && unzip -q -o "$Z" -d _proj
-            M=$(find _proj -name Makefile | head -1)
-            [ -n "$M" ] || { echo "Makefile nao esta dentro do zip"; exit 1; }
-            echo "PROJ=$PWD/$(dirname "$M")" >> $GITHUB_ENV
-          fi
-
-      - name: Conferir arquivos do projeto
-        run: |
-          cd "$PROJ"
-          for f in Makefile source/main.cpp shaders/sprite.vcg shaders/sprite.fcg resources/ICON0.PNG; do
-            [ -e "$f" ] || { echo "FALTANDO: $f"; exit 1; }
-          done
-          echo "projeto ok em $PROJ"
-
-      - name: Host dependencies
+      - name: Host packages (Cg shader compiler + libs for the PSL1GHT tools)
         run: |
           sudo apt-get update
-          sudo apt-get -y install libelf-dev zlib1g-dev libssl-dev python3 make g++
+          sudo apt-get -y install --no-install-recommends make gcc libgmp-dev libssl-dev zlib1g-dev libelf-dev pkg-config nvidia-cg-toolkit
 
-      - name: Download ps3dev SDK
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Download the PS3 toolchain (pre-compiled ps3dev)
         run: |
-          URL=$(gh api repos/ps3dev/ps3dev/releases --jq '
-            map(select(.draft | not))
-            | sort_by(.published_at) | reverse
-            | map(.assets[] | select(.name == "ps3dev-linux-X64.tar.gz") | .browser_download_url)
-            | .[0]')
-          if [ -z "$URL" ] || [ "$URL" = "null" ]; then
-            echo "Nao achei ps3dev-linux-X64.tar.gz nas releases de ps3dev/ps3dev"; exit 1
-          fi
-          echo "SDK: $URL"
-          curl -sL "$URL" | tar xz -C "$GITHUB_WORKSPACE"
-          echo "PS3DEV=${GITHUB_WORKSPACE}/ps3dev"  >> $GITHUB_ENV
-          echo "PSL1GHT=${GITHUB_WORKSPACE}/ps3dev" >> $GITHUB_ENV
-          echo "${GITHUB_WORKSPACE}/ps3dev/bin"     >> $GITHUB_PATH
-          echo "${GITHUB_WORKSPACE}/ps3dev/ppu/bin" >> $GITHUB_PATH
-          echo "${GITHUB_WORKSPACE}/ps3dev/spu/bin" >> $GITHUB_PATH
+          curl -sL https://github.com/ps3dev/ps3toolchain/releases/download/2026-06-09/ps3dev-92534e60-ubuntu-latest.tar.gz | tar xz -C "$GITHUB_WORKSPACE"
+          echo "PS3DEV=$GITHUB_WORKSPACE/ps3dev"  >> "$GITHUB_ENV"
+          echo "PSL1GHT=$GITHUB_WORKSPACE/ps3dev" >> "$GITHUB_ENV"
+          echo "$GITHUB_WORKSPACE/ps3dev/bin"     >> "$GITHUB_PATH"
+          echo "$GITHUB_WORKSPACE/ps3dev/ppu/bin" >> "$GITHUB_PATH"
 
-      # cgcomp (compilador de shaders do PSL1GHT) carrega libCg.so da NVIDIA; nao vem no SDK
-      - name: Install NVIDIA Cg toolkit
-        run: |
-          find_cg() { find /usr /opt "$HOME/cg" -name 'libCg.so*' 2>/dev/null | head -1; }
-          L=$(find_cg)
-          if [ -z "$L" ]; then
-            for P in libcg nvidia-cg-toolkit; do
-              sudo apt-get install -y "$P" >/dev/null 2>&1 && echo "apt: $P instalado" || echo "apt: $P indisponivel"
-            done
-            L=$(find_cg)
-          fi
-          if [ -z "$L" ]; then
-            mkdir -p "$HOME/cg"
-            for U in \
-              https://developer.download.nvidia.com/cg/Cg_3.1/Cg-3.1_April2012_x86_64.tgz \
-              http://developer.download.nvidia.com/cg/Cg_3.1/Cg-3.1_April2012_x86_64.tgz; do
-              if curl -fsSL "$U" -o "$HOME/cg.tgz"; then tar xzf "$HOME/cg.tgz" -C "$HOME/cg" && break; fi
-            done
-            L=$(find_cg)
-          fi
-          [ -n "$L" ] || { echo "libCg.so NAO encontrado por nenhum metodo"; exit 1; }
-          D=$(dirname "$L")
-          # garante o nome sem versao que o cgcomp usa em dlopen("libCg.so")
-          [ -e "$D/libCg.so" ] || sudo ln -sf "$L" "$D/libCg.so"
-          echo "Cg em $D"
-          echo "LD_LIBRARY_PATH=$D:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+      - name: Build (standard art)
+        run: make -f Makefile.ps3 pkg
 
-      - name: Check de logica no host (opcional)
-        continue-on-error: true
-        run: |
-          cd "$PROJ"
-          if [ -f tools/host_check.sh ]; then bash tools/host_check.sh; else echo "tools/ ausente: pulando"; fi
+      - name: Build (HD art)
+        run: make -f Makefile.ps3 HD=1 pkg
 
-      - name: Build PKG
-        run: |
-          cd "$PROJ"
-          make pkg
-
-      - name: Reunir saidas
+      - name: Collect
         run: |
           mkdir -p out
-          cp "$PROJ"/StardewPS3.pkg "$PROJ"/StardewPS3.self out/
-          ls -la out
+          cp hk3ds_ps3.pkg hk3ds_ps3.self hk3ds_ps3_hd.pkg hk3ds_ps3_hd.self out/
+          cp PS3_TUTORIAL.md out/
 
-      - name: Upload artifacts
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: StardewPS3
+          name: hk3ds-ps3
           path: out/*
           if-no-files-found: error
-          
